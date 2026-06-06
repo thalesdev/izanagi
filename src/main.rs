@@ -1,18 +1,21 @@
 #![no_std]
 #![no_main]
 
+mod arch;
 mod drivers;
+mod kernel;
 
 use core::panic::PanicInfo;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+fn kernel_main() -> ! {
+    kernel::printk::register_console(&drivers::vga::VGA);
+
     println!("Hello World{}", "!");
-    panic!("throwing!");
+    panic!("pain games joga amanha!");
 }
 
 #[panic_handler]
-pub fn panic(info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
-    loop {}
+    arch::halt()
 }

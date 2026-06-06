@@ -1,10 +1,13 @@
-use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use super::color::{Color, ColorCode};
+use crate::kernel::printk::Console;
 use super::buffer::{Buffer, ScreenChar, BUFFER_HEIGHT, BUFFER_WIDTH};
+use super::color::{Color, ColorCode};
 
+/// Estado mutável do console de texto: onde estamos escrevendo, com qual cor, e
+/// uma referência ao buffer MMIO. Sempre acessado através do [`WRITER`] (atrás
+/// de um `Mutex`), nunca diretamente.
 pub struct Writer {
     column_position: usize,
     color_code: ColorCode,
@@ -64,16 +67,19 @@ impl Writer {
             self.buffer.chars[row][col].write(blank);
         }
     }
-}
 
-impl fmt::Write for Writer {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_string(s);
-        Ok(())
+    fn clear_screen(&mut self) {
+        for row in 0..BUFFER_HEIGHT {
+            self.clear_row(row);
+        }
+        self.column_position = 0;
     }
 }
 
 lazy_static! {
+    /// O estado global do console VGA texto. `lazy_static` porque a inicialização
+    /// desreferencia o ponteiro cru `0xb8000`, o que não é possível em contexto
+    /// `const`/`static` — é adiada para o runtime, na primeira utilização.
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
         column_position: 0,
         color_code: ColorCode::new(Color::Yellow, Color::Black),
@@ -81,8 +87,22 @@ lazy_static! {
     });
 }
 
-#[doc(hidden)]
-pub fn _print(args: fmt::Arguments) {
-    use core::fmt::Write;
-    WRITER.lock().write_fmt(args).unwrap();
+/// O backend de console VGA texto (o "vgacon").
+///
+/// É *zero-sized*: todo o estado vive no [`WRITER`] global. Por isso pode ser um
+/// `static` simples e `&VGA` vira um `&'static dyn Console` registrável no printk
+/// sem nenhuma dança de lifetime.
+pub struct VgaText;
+
+/// Instância estática a ser registrada em `kernel::printk::register_console`.
+pub static VGA: VgaText = VgaText;
+
+impl Console for VgaText {
+    fn write_str(&self, s: &str) {
+        WRITER.lock().write_string(s);
+    }
+
+    fn clear(&self) {
+        WRITER.lock().clear_screen();
+    }
 }

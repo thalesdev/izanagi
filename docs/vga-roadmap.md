@@ -6,6 +6,13 @@
 > Cada fase tem: o conceito, o hardware concreto, diagramas, como Linux/Windows/
 > BSD resolvem o mesmo problema, e links para fontes primárias.
 
+> **Atualização (reestruturação da árvore).** O projeto foi reorganizado — veja
+> [architecture.md](architecture.md). Duas consequências para este guia: (1) a
+> **Fase 6 (inversão para `trait Console`) já está feita**, trazida para a
+> fundação, e o `printk` vive em `src/kernel/printk.rs`; (2) os arquivos do VGA
+> texto agora estão em `src/drivers/vga/text/`, e o port I/O já tem lar em
+> `src/arch/x86_64/port.rs`. As fases abaixo foram anotadas com o que mudou.
+
 ## Índice
 
 - [Como usar este guia](#como-usar-este-guia)
@@ -21,7 +28,7 @@
 - [Fase 3 — Scroll por hardware](#fase-3--scroll-por-hardware)
 - [Fase 4 — Cor e atributos dinâmicos](#fase-4--cor-e-atributos-dinâmicos)
 - [Fase 5 — Sequências de escape ANSI](#fase-5--sequências-de-escape-ansi)
-- [Fase 6 — Interface de console (a inversão)](#fase-6--interface-de-console-a-inversão)
+- [Fase 6 — Interface de console (a inversão) ✅ feito](#fase-6--interface-de-console-a-inversão)
 - [Fase 7 — Console serial](#fase-7--console-serial)
 - [Fase 8 — Terminais virtuais](#fase-8--terminais-virtuais)
 - [Apêndice A — Biblioteca de links](#apêndice-a--biblioteca-de-links)
@@ -276,7 +283,7 @@ para você focar nos conceitos, não nos pixels.
                Fase 5  parser ANSI ................. máquina de estados
                   │
                   ▼
-               Fase 6  trait Console ............... ★ SALTO ARQUITETURAL
+               Fase 6  trait Console ............... ✅ FEITO (na fundação)
                   │                                   (inversão de dependência)
                   ├─────────────┐
                   ▼             ▼
@@ -287,19 +294,21 @@ para você focar nos conceitos, não nos pixels.
 
 Dois marcos: **Fase 2** te tira do conforto da memória e te dá port I/O (que
 quase tudo depois usa). **Fase 6** te tira do "tenho um driver" e te leva a
-"tenho uma arquitetura de subsistema".
+"tenho uma arquitetura de subsistema" — e esse salto **já foi dado** na
+reestruturação da árvore (ver [architecture.md](architecture.md)).
 
 ---
 
 ## Fase 1 — Output básico (já feito)
 
-**Status:** ✅ implementado em `src/drivers/vga/`.
+**Status:** ✅ implementado em `src/drivers/vga/text/` (movido na reestruturação).
 
 O que você já domina, e que é a fundação de tudo:
 
 - `write_byte` / `write_string` — escreve células em `0xB8000` (MMIO).
 - `new_line` + scroll por software — copia linhas 1..25 → 0..24, limpa a última.
-- `println!`/`print!` via `core::fmt::Write` — formatação genérica.
+- `println!`/`print!` via `core::fmt::Write` — formatação genérica (hoje
+  despachados pelo `printk` em `src/kernel/printk.rs`; ver Fase 6).
 - Estado global seguro com `lazy_static` + `spin::Mutex`.
 
 **Por que o `Mutex` é `spin` e não o da `std`?** Porque não temos `std`, não
@@ -327,8 +336,8 @@ Ele é independente do que você escreve: vive em dois registradores do CRTC que
 guardam a *posição linear* do cursor. Hoje seu kernel escreve texto mas o cursor
 fica parado, porque você nunca atualiza esses registradores.
 
-Esta fase é o seu **primeiro contato com port I/O**. O módulo de portas que você
-criar aqui será reusado nas Fases 3 e 7.
+Esta fase é o seu **primeiro contato com port I/O**. O módulo de portas já existe
+(`src/arch/x86_64/port.rs`, criado na fundação) e será reusado nas Fases 3 e 7.
 
 ### Hardware
 
@@ -351,8 +360,9 @@ Forma do cursor + enable (registradores 0x0A / 0x0B):
 
 ### O que implementar
 
-1. **Módulo de portas reusável.** Algo como `src/arch/x86_64/port.rs` (ou use o
-   crate `x86_64`). Mínimo: `outb(port, val)` e `inb(port)`.
+1. **Módulo de portas reusável.** ✅ **Já existe** em `src/arch/x86_64/port.rs`
+   (`outb`/`inb`), criado na fundação — hoje marcado `#[allow(dead_code)]` porque
+   ninguém o usa ainda. É só passar a chamá-lo (ou usar o crate `x86_64` direto).
 
 2. **Mover o cursor:**
    ```rust
@@ -590,6 +600,11 @@ rede); a diferença entre dados e comandos in-band; a tabela de cores ANSI↔VGA
 
 ## Fase 6 — Interface de console (a inversão)
 
+**Status:** ✅ **feito na fundação** (reestruturação da árvore). A inversão já está
+em [`src/kernel/printk.rs`](../src/kernel/printk.rs); as seções abaixo agora
+documentam **como ficou** em vez de propor. Leia o conceito mesmo assim — é o
+coração do guia. Ver também [architecture.md](architecture.md).
+
 ### Conceito — leia com atenção, é o coração do guia
 
 Até aqui você tem um **driver**. A partir daqui você tem uma **arquitetura**.
@@ -653,36 +668,51 @@ princípios mais centrais de design de kernel.
 A lição: **três kernels, três nomes, uma única ideia** — uma interface estável no
 meio e drivers intercambiáveis nas pontas.
 
-### O que implementar
+### Como ficou implementado
 
-1. Criar `src/kernel/printk.rs` (note o `kernel/`, espelhando o Linux): move os
-   macros `print!`/`println!` e o `_print` (que vira `printk`) para cá.
-2. Definir a trait:
+Tudo em [`src/kernel/printk.rs`](../src/kernel/printk.rs):
+
+1. Os macros `print!`/`println!` e o despacho saíram do VGA e vieram para cá; o
+   antigo `_print` agora **itera sobre os consoles registrados**.
+2. A trait — repare nas diferenças para o esboço original (`&self` no lugar de
+   `&mut self`, `Sync` no lugar de `Send`):
    ```rust
-   pub trait Console: Send {
-       fn write_str(&mut self, s: &str);
-       fn clear(&mut self);
-       // mais tarde: set_color, flush, etc.
+   pub trait Console: Sync {
+       fn write_str(&self, s: &str);
+       fn clear(&self);
    }
    ```
-3. Fazer o `Writer` do VGA implementar `Console`.
-4. No `printk`, guardar os consoles registrados (ex.: um
-   `spin::Mutex<Vec<&'static mut dyn Console>>` — ou, sem heap ainda, um array
-   fixo) e iterar sobre eles no `_print`.
-5. `register_console(c)` para plugar backends em runtime.
+   **Por que `&self`/`Sync`?** Para guardar `&'static dyn Console` compartilhado
+   sem `&'static mut` (um pesadelo de borrow-checker). Cada backend guarda o
+   estado mutável atrás da própria trava (*interior mutability*): o `VgaText` é um
+   tipo *zero-sized* que delega para um `Mutex<Writer>` global.
+3. O VGA implementa via o wrapper `VgaText` (em `src/drivers/vga/text/writer.rs`).
+4. Os consoles ficam numa **tabela de tamanho fixo** (`[Option<&dyn Console>; 4]`),
+   não um `Vec` — ainda não temos alocador. `_print` itera os ocupados.
+5. `register_console(&VGA)` é chamado no `kernel_main` (em `src/main.rs`).
 
-### Estrutura de diretórios resultante (espelha o Linux)
+Detalhe que vale ouro: como `Console::write_str` é `&self` mas `core::fmt` precisa
+de `fmt::Write` (`&mut self`), um adapter `ConsoleWriter` faz a ponte — assim
+reaproveitamos toda a formatação sem alocar nada.
+
+> **`Console` é output-only**, igual ao `struct console` do Linux. O console
+> *interativo* (input/stdin) é outra camada, maior — o TTY/VT — que é a **Fase 8**
+> deste guia. "Console" aqui = sink de saída do printk.
+
+### Estrutura de diretórios resultante (a real, hoje)
 
 ```
 src/
+├── main.rs              ← kernel_main(): registra os consoles
+├── arch/x86_64/
+│   ├── boot.rs          ← _start
+│   └── port.rs          ← port I/O (lar da Fase 2)
 ├── kernel/
-│   └── printk.rs        ← subsistema de log, AGNÓSTICO de hardware (policy)
-├── arch/
-│   └── x86_64/
-│       └── port.rs      ← port I/O (da Fase 2)
+│   └── printk.rs        ← trait Console + register_console + _print (policy)
 └── drivers/
-    ├── vga/             ← um backend de Console (mechanism)
-    └── serial/          ← outro backend (Fase 7)
+    ├── vga/text/        ← VgaText: um backend de Console (mechanism)
+    ├── video/           ← trait Framebuffer (p/ Fase B; o "fbcon" vem aqui)
+    └── serial/          ← outro backend de Console (Fase 7, a criar)
 ```
 
 ### Conceitos que esta fase consolida
@@ -744,7 +774,8 @@ Configurar 8N1 a 38400 baud (exemplo):
 1. `src/drivers/serial/mod.rs` com `SerialPort::init()` e `SerialPort::send(u8)`
    (use os ports da Fase 2). Ou use o crate pronto
    [`uart_16550`](https://docs.rs/uart_16550/) para comparar com a sua.
-2. Implementar a trait `Console` (Fase 6) para a serial.
+2. Implementar a trait `Console` (`&self`, como ficou na fundação) para a serial —
+   provavelmente um `SerialPort` atrás de um `Mutex`, espelhando o `VgaText`.
 3. `register_console()` da serial no boot.
 4. Configurar o QEMU com `-serial stdio` e ver `println!` aparecer **na tela e no
    terminal do host ao mesmo tempo**, sem o `printk` saber a diferença. Esse é o
@@ -784,6 +815,11 @@ Múltiplas "telas" independentes, cada uma com seu próprio conteúdo, cursor e 
 multiplexando **um único** hardware de vídeo. Trocar de terminal virtual (VT) é
 salvar o estado do atual e restaurar o do alvo. É o que o `Ctrl+Alt+F1..F6` faz
 no Linux: vários consoles de texto sobre uma placa só.
+
+> **A ligação com a Fase 6:** esta é a camada que o `Console` *output-only* não
+> cobre de propósito — estado de tela por terminal e (depois, com teclado) input.
+> É a porta de entrada do TTY/VT, o "console interativo" de verdade, distinto do
+> sink de saída do printk.
 
 ```
     N buffers em RAM                       hardware (uma tela)

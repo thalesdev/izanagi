@@ -1,21 +1,10 @@
-mod color;
-mod buffer;
-mod writer;
+//! Driver VGA — **X86-PC-only** (`#[cfg(target_arch = "x86_64")]` no consumidor).
+//!
+//! - [`text`]: modo texto (modo 3), já implementado — o backend de `Console`.
+//! - (Fase B) `modes/`: modos gráficos 13h/12h, que implementarão `Framebuffer`.
+//! - (Fase B) `regs.rs`: os grupos de registradores VGA para *modeset* em long mode.
+
+pub mod text;
 
 #[allow(unused_imports)]
-pub use color::{Color, ColorCode};
-#[allow(unused_imports)]
-pub use buffer::{ScreenChar, Buffer, BUFFER_HEIGHT, BUFFER_WIDTH};
-#[allow(unused_imports)]
-pub use writer::{Writer, WRITER, _print};
-
-#[macro_export]
-macro_rules! print {
-    ($($arg:tt)*) => ($crate::drivers::vga::_print(format_args!($($arg)*)));
-}
-
-#[macro_export]
-macro_rules! println {
-    () => ($crate::print!("\n"));
-    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
-}
+pub use text::{VgaText, VGA};
